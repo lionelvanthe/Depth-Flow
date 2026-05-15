@@ -7,6 +7,8 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.nio.FloatBuffer
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.scale
 
 class OnnxDepthEstimator(private val context: Context, private val modelPath: String) : DepthEstimator {
 
@@ -27,7 +29,7 @@ class OnnxDepthEstimator(private val context: Context, private val modelPath: St
 
         // 1. Preprocessing: Resize image to model input size (e.g., 518x518 for DepthAnythingV2)
         val inputSize = 518 
-        val resizedBitmap = Bitmap.createScaledBitmap(image, inputSize, inputSize, true)
+        val resizedBitmap = image.scale(inputSize, inputSize)
         
         // 2. Convert Bitmap to FloatBuffer (Normalization)
         val floatBuffer = FloatBuffer.allocate(1 * 3 * inputSize * inputSize)
@@ -65,7 +67,7 @@ class OnnxDepthEstimator(private val context: Context, private val modelPath: St
             if (v > max) max = v
         }
 
-        val depthBitmap = Bitmap.createBitmap(inputSize, inputSize, Bitmap.Config.ARGB_8888)
+        val depthBitmap = createBitmap(inputSize, inputSize)
         val depthPixels = IntArray(inputSize * inputSize)
         for (i in outputData.indices) {
             val normalized = ((outputData[i] - min) / (max - min) * 255).toInt()
@@ -74,7 +76,7 @@ class OnnxDepthEstimator(private val context: Context, private val modelPath: St
         depthBitmap.setPixels(depthPixels, 0, inputSize, 0, 0, inputSize, inputSize)
 
         // Resize back to original image size
-        return Bitmap.createScaledBitmap(depthBitmap, image.width, image.height, true)
+        return depthBitmap.scale(image.width, image.height)
     }
 
     fun close() {

@@ -3,6 +3,7 @@ package com.example.depthflow
 import android.os.Bundle
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.widget.ImageView
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -15,9 +16,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
-    private lateinit var motionController: MotionController
-    private var depthFlowView: DepthFlowView? = null
-    private var currentState = DepthState()
     private var realEstimator: com.example.depthflow.estimators.OnnxDepthEstimator? = null
 
     private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -43,38 +41,7 @@ class MainActivity : AppCompatActivity() {
                 val depthMap = realEstimator?.estimate(bitmap) ?: bitmap
                 
                 withContext(Dispatchers.Main) {
-                    findViewById<android.view.View>(R.id.progressBar).visibility = android.view.View.GONE
-                    
-                    val container = findViewById<android.widget.FrameLayout>(R.id.container)
-                    
-                    if (depthFlowView == null) {
-                        val view = DepthFlowView(this@MainActivity)
-                        container.addView(view)
-                        depthFlowView = view
-                        depthFlowView?.setState(currentState)
-                    }
-
-                    // Adjust aspect ratio
-                    val view = depthFlowView!!
-                    val bitmapRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
-                    val containerWidth = container.width
-                    val containerHeight = container.height
-                    val containerRatio = containerWidth.toFloat() / containerHeight.toFloat()
-
-                    val layoutParams = view.layoutParams as android.widget.FrameLayout.LayoutParams
-                    if (bitmapRatio > containerRatio) {
-                        // Image is wider than container
-                        layoutParams.width = containerWidth
-                        layoutParams.height = (containerWidth / bitmapRatio).toInt()
-                    } else {
-                        // Image is taller than container
-                        layoutParams.height = containerHeight
-                        layoutParams.width = (containerHeight * bitmapRatio).toInt()
-                    }
-                    layoutParams.gravity = android.view.Gravity.CENTER
-                    view.layoutParams = layoutParams
-
-                    depthFlowView?.setImages(bitmap, depthMap)
+                    findViewById<ImageView>(R.id.depthMap).setImageBitmap(depthMap)
                 }
             }
         }
@@ -84,16 +51,9 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContentView(R.layout.activity_main)
-        
+
         findViewById<com.google.android.material.floatingactionbutton.FloatingActionButton>(R.id.fabPickImage).setOnClickListener {
             pickImageLauncher.launch("image/*")
-        }
-
-        // Initialize and start motion controller
-        motionController = MotionController(this)
-        motionController.setOnOffsetChangedListener { x, y ->
-            currentState = currentState.copy(offset = Pair(x, y))
-            depthFlowView?.setState(currentState)
         }
 
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
@@ -103,13 +63,4 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        motionController.start()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        motionController.stop()
-    }
 }
