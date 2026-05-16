@@ -77,11 +77,28 @@ class MainActivity : AppCompatActivity() {
             lifecycleScope.launch(Dispatchers.IO) {
                 val bitmap = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
                     val source = android.graphics.ImageDecoder.createSource(contentResolver, it)
-                    android.graphics.ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+                    android.graphics.ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
                         decoder.isMutableRequired = true
+                        // Optimization: Downscale if larger than 2048px to save RAM and processing time
+                        val maxDim = 2048
+                        if (info.size.width > maxDim || info.size.height > maxDim) {
+                            val ratio = info.size.width.toFloat() / info.size.height.toFloat()
+                            val targetW = if (ratio > 1f) maxDim else (maxDim * ratio).toInt()
+                            val targetH = if (ratio > 1f) (maxDim / ratio).toInt() else maxDim
+                            decoder.setTargetSize(targetW, targetH)
+                        }
                     }
                 } else {
-                    android.provider.MediaStore.Images.Media.getBitmap(contentResolver, it)
+                    val original = android.provider.MediaStore.Images.Media.getBitmap(contentResolver, it)
+                    val maxDim = 2048
+                    if (original.width > maxDim || original.height > maxDim) {
+                        val ratio = original.width.toFloat() / original.height.toFloat()
+                        val targetW = if (ratio > 1f) maxDim else (maxDim * ratio).toInt()
+                        val targetH = if (ratio > 1f) (maxDim / ratio).toInt() else maxDim
+                        val scaled = Bitmap.createScaledBitmap(original, targetW, targetH, true)
+                        if (scaled != original) original.recycle()
+                        scaled
+                    } else original
                 }
 
                 if (realEstimator == null) {
@@ -114,6 +131,13 @@ class MainActivity : AppCompatActivity() {
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
             ?: sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
+
+        // Pre-load estimator to avoid delay on first run
+        lifecycleScope.launch(Dispatchers.IO) {
+            if (realEstimator == null) {
+                realEstimator = com.example.depthflow.estimators.OnnxDepthEstimator(this@MainActivity, "depth_anything_v2_small.onnx")
+            }
+        }
 
         findViewById<com.google.android.material.floatingactionbutton.FloatingActionButton>(R.id.fabPickImage).setOnClickListener {
             pickImageLauncher.launch("image/*")
@@ -246,7 +270,7 @@ class MainActivity : AppCompatActivity() {
 
             // Pass sensor offset; GPU uniform iTime handles the idle oscillation
             GLES30.glUniform2f(uDepthOffset,    offset.x, offset.y)
-            GLES30.glUniform1f(uDepthHeight,    0.2f)
+            GLES30.glUniform1f(uDepthHeight,    0.13f)
             GLES30.glUniform1f(uDepthSteady,    0.5f)
             GLES30.glUniform1f(uDepthZoom,      1.0f)
             GLES30.glUniform1f(uDepthIso,       0f)
