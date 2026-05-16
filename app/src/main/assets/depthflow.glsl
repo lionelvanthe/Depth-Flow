@@ -84,9 +84,9 @@ DepthFlow DepthMake(
             vec3 point = mix(camera.origin, intersect, mix(safe, 1.0, walk));
             depth.gluv = point.xy;
 
-            // Sample next depth value
+            // Sample next depth value (use clamp, NOT mirror, to avoid mirrored ghost artifacts)
             last_value = depth.value;
-            depth.value = gtexture(depthmap, depth.gluv, true).r;
+            depth.value = gtexture(depthmap, depth.gluv).r;
 
             float surface = depth.height * depth.value;
             float ceiling = (1.0 - point.z);
@@ -103,11 +103,21 @@ DepthFlow DepthMake(
         }
     }
 
+    // Mark pixel as out-of-bounds if the final UV is outside [−1,1]
+    // This prevents sampling from the clamped edge producing streak artifacts
+    ivec2 depthRes = textureSize(depthmap, 0);
+    float dAspect  = float(depthRes.y) / float(depthRes.x);
+    vec2 scaledUV  = depth.gluv * vec2(dAspect, 1.0);
+    if (abs(scaledUV.x) > 1.0 + quality || abs(scaledUV.y) > 1.0 + quality) {
+        depth.oob = true;
+        return depth;
+    }
+
     // The gradient is always normal to a surface; assume the change
     // of z is proportional to the maximum surface height
     depth.normal = normalize(vec3(
-        (gtexture(depthmap, depth.gluv - vec2(quality, 0.0), true).r - depth.value) / quality,
-        (gtexture(depthmap, depth.gluv - vec2(0.0, quality), true).r - depth.value) / quality,
+        (gtexture(depthmap, depth.gluv - vec2(quality, 0.0)).r - depth.value) / quality,
+        (gtexture(depthmap, depth.gluv - vec2(0.0, quality)).r - depth.value) / quality,
         max(depth.height, quality)
     ));
 
@@ -143,10 +153,18 @@ void main() {
     GetCamera(iCamera);
     GetDepthFlow(iDepth);
     DepthFlow depthflow = DepthMake(iCamera, iDepth, depth);
-    fragColor = gtexture(image, depthflow.gluv, true);
+
+    // Use plain clamp sampling (no mirror) so clamped-edge pixels don't smear inward
+    fragColor = gtexture(image, depthflow.gluv);
 
     if (depthflow.oob) {
-        fragColor = vec4(vec3(0.0), 1.0);
+        // Soft fade to black at out-of-bounds pixels instead of a hard cut
+        ivec2 imgRes  = textureSize(image, 0);
+        float iAsp    = float(imgRes.y) / float(imgRes.x);
+        vec2  normUV  = depthflow.gluv * vec2(iAsp, 1.0);
+        float edgeDist = max(abs(normUV.x), abs(normUV.y));
+        float fade     = 1.0 - smoothstep(1.0, 1.15, edgeDist);
+        fragColor = vec4(vec3(0.0), 1.0) * (1.0 - fade) + fragColor * fade;
         return;
     }
 
@@ -168,11 +186,11 @@ void main() {
         vec2 delta = (0.5*iLensIntensity) * normalize(agluv) * decay;
         vec3 color = vec3(0.0);
 
-        // Integrate the color along the path, different speeds per channel
+        // Integrate the color along the path (clamp, no mirror)
         for (float i=0.0; i<1.0; i+=(1.0/iLensQuality)) {
-            color.r += gtexture(image, depthflow.gluv - (1.0*i*delta), true).r;
-            color.g += gtexture(image, depthflow.gluv - (2.0*i*delta), true).g;
-            color.b += gtexture(image, depthflow.gluv - (4.0*i*delta), true).b;
+            color.r += gtexture(image, depthflow.gluv - (1.0*i*delta)).r;
+            color.g += gtexture(image, depthflow.gluv - (2.0*i*delta)).g;
+            color.b += gtexture(image, depthflow.gluv - (4.0*i*delta)).b;
         }
 
         // Normalize the color, as it grew with integration
@@ -187,7 +205,7 @@ void main() {
         for (float angle=0.0; angle<TAU; angle+=TAU/iBlurDirections) {
             for (float walk=1.0/iBlurQuality; walk<=1.001; walk+=1.0/iBlurQuality) {
                 vec2 displacement = vec2(cos(angle), sin(angle)) * walk * intensity;
-                color += gtexture(image, depthflow.gluv + displacement, true);
+                color += gtexture(image, depthflow.gluv + displacement); // clamp, no mirror
             }
         }
         fragColor = color / (iBlurDirections*iBlurQuality);

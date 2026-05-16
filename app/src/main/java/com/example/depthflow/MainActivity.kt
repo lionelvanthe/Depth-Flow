@@ -36,26 +36,35 @@ class MainActivity : AppCompatActivity() {
     private lateinit var sensorManager: SensorManager
     private var rotationSensor: Sensor? = null
 
+    // Throttle sensor → only re-render when offset changes meaningfully
     private val sensorListener = object : SensorEventListener {
         private var lastLogTime = 0L
+        private var lastRoll = 0f
+        private var lastPitch = 0f
         override fun onSensorChanged(event: SensorEvent) {
-            if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR || 
+            if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR ||
                 event.sensor.type == Sensor.TYPE_GAME_ROTATION_VECTOR) {
                 val rotationMatrix = FloatArray(9)
                 SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
                 val orientation = FloatArray(3)
                 SensorManager.getOrientation(rotationMatrix, orientation)
-                
-                // orientation[1] is pitch (tilt front/back), orientation[2] is roll (tilt left/right)
-                val pitch = orientation[1]
-                val roll = orientation[2]
-                
-                // Very high sensitivity for testing
-                renderer.setOffset(-roll * 1.2f, -pitch * 1.2f)
 
-                if (System.currentTimeMillis() - lastLogTime > 1000) {
-                    android.util.Log.d("Parallax", "Sensor: roll=$roll, pitch=$pitch")
-                    lastLogTime = System.currentTimeMillis()
+                val pitch = orientation[1]
+                val roll  = orientation[2]
+
+                // Only request a new frame if the offset changed by at least 0.002
+                val dx = kotlin.math.abs(roll  - lastRoll)
+                val dy = kotlin.math.abs(pitch - lastPitch)
+                if (dx > 0.002f || dy > 0.002f) {
+                    renderer.setOffset(-roll * 1.2f, -pitch * 1.2f)
+                    glSurfaceView.requestRender()
+                    lastRoll  = roll
+                    lastPitch = pitch
+
+                    if (System.currentTimeMillis() - lastLogTime > 1000) {
+                        android.util.Log.d("Parallax", "Sensor: roll=$roll, pitch=$pitch")
+                        lastLogTime = System.currentTimeMillis()
+                    }
                 }
             }
         }
@@ -98,7 +107,9 @@ class MainActivity : AppCompatActivity() {
         glSurfaceView.setEGLContextClientVersion(3)
         renderer = ParallaxRenderer(this)
         glSurfaceView.setRenderer(renderer)
-        glSurfaceView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+        // RENDERMODE_WHEN_DIRTY: only draw when we explicitly call requestRender()
+        // This is the single biggest power/heat optimization — idle = 0 GPU work
+        glSurfaceView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
@@ -119,7 +130,8 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         glSurfaceView.onResume()
         rotationSensor?.let {
-            sensorManager.registerListener(sensorListener, it, SensorManager.SENSOR_DELAY_GAME)
+            // SENSOR_DELAY_UI (~60ms) is sufficient for parallax; GAME (~20ms) is overkill
+            sensorManager.registerListener(sensorListener, it, SensorManager.SENSOR_DELAY_UI)
         }
     }
 
@@ -142,7 +154,34 @@ class MainActivity : AppCompatActivity() {
         private var viewportWidth: Int = 1080
         private var viewportHeight: Int = 1920
 
+        // ── Cached uniform locations (populated once after shader link) ──────────
+        private var uResolution     = -1; private var uAspectRatio    = -1
+        private var uImageAspect    = -1  // separate: image w/h for center-crop sampling
+        private var uViewportAspect = -1; private var uWantAspect     = -1
+        private var uQuality        = -1; private var uCameraMode     = -1
+        private var uCameraProj     = -1; private var uCameraPos      = -1
+        private var uCameraFwd      = -1; private var uCameraUp       = -1
+        private var uCameraRight    = -1; private var uCameraZenith   = -1
+        private var uCameraFocal    = -1; private var uCameraZoom     = -1
+        private var uCameraOrbit    = -1; private var uCameraDolly    = -1
+        private var uCameraSep      = -1; private var uCameraIso      = -1
+        private var uDepthOffset    = -1; private var uDepthHeight    = -1
+        private var uDepthSteady    = -1; private var uDepthZoom      = -1
+        private var uDepthIso       = -1; private var uDepthDolly     = -1
+        private var uDepthFocus     = -1; private var uDepthCenter    = -1
+        private var uDepthOrigin    = -1; private var uTau            = -1
+        private var uRealtime       = -1; private var uFramerate      = -1
+        private var uInpaint        = -1; private var uLensIntensity  = -1
+        private var uLensQuality    = -1; private var uBlurIntensity  = -1
+        private var uVigIntensity   = -1; private var uSaturation     = -1
+        private var uContrast       = -1; private var uBrightness     = -1
+        private var uSepia          = -1
+        private var uImage          = -1; private var uDepthMap       = -1
+        private var uTime           = -1  // For GPU-side auto-oscillation
+        // ─────────────────────────────────────────────────────────────────────────
+
         private val vertices = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
+        private val startTime = System.currentTimeMillis()
 
         init {
             vertexBuffer = ByteBuffer.allocateDirect(vertices.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().put(vertices)
@@ -153,6 +192,8 @@ class MainActivity : AppCompatActivity() {
             imageBitmap = image
             depthBitmap = depth
             imageAspectRatio = image.width.toFloat() / image.height.toFloat()
+            // Wake up the renderer once to upload new textures
+            glSurfaceView.requestRender()
         }
 
         fun setOffset(x: Float, y: Float) {
@@ -177,59 +218,63 @@ class MainActivity : AppCompatActivity() {
             if (program == 0 || textureId == 0 || depthTextureId == 0) return
             GLES30.glUseProgram(program)
 
-            // Add a tiny auto-oscillation for debugging
-            val time = System.currentTimeMillis() % 10000 / 1000f
-            val autoX = Math.sin(time.toDouble()).toFloat() * 0.05f
-            val autoY = Math.cos(time.toDouble()).toFloat() * 0.05f
+            // ── Use cached uniform locations (no string lookup per frame) ────────
+            // Auto-oscillation time passed as a float uniform → GPU does sin/cos
+            val timeSec = (System.currentTimeMillis() - startTime) / 1000f
 
-            GLES30.glUniform2f(GLES30.glGetUniformLocation(program, "iResolution"), viewportWidth.toFloat(), viewportHeight.toFloat())
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iAspectRatio"), imageAspectRatio)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iViewportAspect"), viewportAspectRatio)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iWantAspect"), viewportAspectRatio)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iQuality"), 0.8f)
-            GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "iCameraMode"), 1)
-            GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "iCameraProjection"), 0)
-            GLES30.glUniform3f(GLES30.glGetUniformLocation(program, "iCameraPosition"), 0f, 0f, 0f)
-            GLES30.glUniform3f(GLES30.glGetUniformLocation(program, "iCameraForward"), 0f, 0f, 1f)
-            GLES30.glUniform3f(GLES30.glGetUniformLocation(program, "iCameraUpward"), 0f, 1f, 0f)
-            GLES30.glUniform3f(GLES30.glGetUniformLocation(program, "iCameraRight"), 1f, 0f, 0f)
-            GLES30.glUniform3f(GLES30.glGetUniformLocation(program, "iCameraZenith"), 0f, 0f, 1f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iCameraFocalLength"), 1.0f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iCameraZoom"), 1.0f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iCameraOrbital"), 0f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iCameraDolly"), 0f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iCameraSeparation"), 0f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iCameraIsometric"), 0f)
+            GLES30.glUniform2f(uResolution,     viewportWidth.toFloat(), viewportHeight.toFloat())
+            // iAspectRatio = viewport aspect → camera.glsl uses it for coordinate space
+            // iImageAspect = image aspect    → used by our center-crop gtexture override
+            GLES30.glUniform1f(uAspectRatio,    viewportAspectRatio)
+            GLES30.glUniform1f(uImageAspect,    imageAspectRatio)
+            GLES30.glUniform1f(uViewportAspect, viewportAspectRatio)
+            GLES30.glUniform1f(uWantAspect,     viewportAspectRatio)
+            GLES30.glUniform1f(uQuality,        0.5f)  // Balanced: lower heat, still looks good
+            GLES30.glUniform1i(uCameraMode,     1)
+            GLES30.glUniform1i(uCameraProj,     0)
+            GLES30.glUniform3f(uCameraPos,      0f, 0f, 0f)
+            GLES30.glUniform3f(uCameraFwd,      0f, 0f, 1f)
+            GLES30.glUniform3f(uCameraUp,       0f, 1f, 0f)
+            GLES30.glUniform3f(uCameraRight,    1f, 0f, 0f)
+            GLES30.glUniform3f(uCameraZenith,   0f, 0f, 1f)
+            GLES30.glUniform1f(uCameraFocal,    1.0f)
+            GLES30.glUniform1f(uCameraZoom,     1.0f)
+            GLES30.glUniform1f(uCameraOrbit,    0f)
+            GLES30.glUniform1f(uCameraDolly,    0f)
+            GLES30.glUniform1f(uCameraSep,      0f)
+            GLES30.glUniform1f(uCameraIso,      0f)
 
-            GLES30.glUniform2f(GLES30.glGetUniformLocation(program, "iDepthOffset"), offset.x + autoX, offset.y + autoY)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iDepthHeight"), 0.4f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iDepthSteady"), 0.5f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iDepthZoom"), 1.0f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iDepthIsometric"), 0f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iDepthDolly"), 0f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iDepthFocus"), 0.5f)
-            GLES30.glUniform2f(GLES30.glGetUniformLocation(program, "iDepthCenter"), 0f, 0f)
-            GLES30.glUniform2f(GLES30.glGetUniformLocation(program, "iDepthOrigin"), 0f, 0f)
+            // Pass sensor offset; GPU uniform iTime handles the idle oscillation
+            GLES30.glUniform2f(uDepthOffset,    offset.x, offset.y)
+            GLES30.glUniform1f(uDepthHeight,    0.2f)
+            GLES30.glUniform1f(uDepthSteady,    0.5f)
+            GLES30.glUniform1f(uDepthZoom,      1.0f)
+            GLES30.glUniform1f(uDepthIso,       0f)
+            GLES30.glUniform1f(uDepthDolly,     0f)
+            GLES30.glUniform1f(uDepthFocus,     0.5f)
+            GLES30.glUniform2f(uDepthCenter,    0f, 0f)
+            GLES30.glUniform2f(uDepthOrigin,    0f, 0f)
 
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iTau"), 0.0f)
-            GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "iRealtime"), 1)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iFramerate"), 60.0f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iInpaint"), 0f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iLensIntensity"), 0f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iLensQuality"), 1f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iBlurIntensity"), 0f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iVigIntensity"), 0f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iColorsSaturation"), 1f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iColorsContrast"), 1f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iColorsBrightness"), 1f)
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "iColorsSepia"), 0f)
+            GLES30.glUniform1f(uTau,            0.0f)
+            GLES30.glUniform1i(uRealtime,       1)
+            GLES30.glUniform1f(uFramerate,      60.0f)
+            GLES30.glUniform1f(uInpaint,        0f)
+            GLES30.glUniform1f(uLensIntensity,  0f)
+            GLES30.glUniform1f(uLensQuality,    1f)
+            GLES30.glUniform1f(uBlurIntensity,  0f)
+            GLES30.glUniform1f(uVigIntensity,   0f)
+            GLES30.glUniform1f(uSaturation,     1f)
+            GLES30.glUniform1f(uContrast,       1f)
+            GLES30.glUniform1f(uBrightness,     1f)
+            GLES30.glUniform1f(uSepia,          0f)
+            GLES30.glUniform1f(uTime,           timeSec)
 
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, textureId)
-            GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "image"), 0)
+            GLES30.glUniform1i(uImage, 0)
             GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, depthTextureId)
-            GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uDepthMap"), 1)
+            GLES30.glUniform1i(uDepthMap, 1)
 
             val posHandle = GLES30.glGetAttribLocation(program, "a_Position")
             GLES30.glEnableVertexAttribArray(posHandle)
@@ -278,17 +323,40 @@ class MainActivity : AppCompatActivity() {
                     .trim() + "\n"
             }
 
+            // Patch the gtexture function in shaderflow to do proper center-crop:
+            // Replace it in-place so GLSL sees only one definition (no 'already has a body').
+            val centerCropFunc = """
+                // Center-crop: fills viewport while maintaining image aspect ratio
+                vec4 gtexture(sampler2D image, vec2 gluvIn) {
+                    float scale = iAspectRatio / iImageAspect;
+                    vec2 uv;
+                    if (scale >= 1.0) {
+                        uv.x = (gluvIn.x / iAspectRatio) * 0.5 + 0.5;
+                        uv.y = (gluvIn.y * scale) * 0.5 + 0.5;
+                    } else {
+                        uv.x = (gluvIn.x / iImageAspect) * 0.5 + 0.5;
+                        uv.y = gluvIn.y * 0.5 + 0.5;
+                    }
+                    return texture(image, uv);
+                }
+            """.trimIndent()
+
             val shaderFlow = loadAsset("shaders/include/shaderflow.glsl")
                 .replace(Regex("#define iAspectRatio.*"), "//")
+                .replace(
+                    // Replace the original gtexture(image, gluv) body with center-crop version
+                    Regex("""vec4 gtexture\(sampler2D image, vec2 gluv\) \{[\s\S]*?\}"""),
+                    centerCropFunc
+                )
             val cameraFlow = loadAsset("shaders/include/camera.glsl")
             val depthFlowLogic = loadAsset("depthflow.glsl")
                 .replace("void main() {", "void main() { agluv = v_agluv; gluv = v_gluv; stuv = v_stuv; astuv = v_astuv; ")
                 .replace("DepthMake(iCamera, iDepth, depth)", "DepthMake(iCamera, iDepth, uDepthMap)")
-                .replace("for (int it=0; it<1000; it++)", "for (int it=0; it<100; it++)")
+                .replace("for (int it=0; it<1000; it++)", "for (int it=0; it<60; it++)")
 
             val fShaderCode = "#version 300 es\n" +
                 "precision highp float;\n" +
-                "uniform vec2 iResolution; uniform float iAspectRatio; uniform float iWantAspect; uniform float iViewportAspect;\n" +
+                "uniform vec2 iResolution; uniform float iAspectRatio; uniform float iImageAspect; uniform float iWantAspect; uniform float iViewportAspect;\n" +
                 "uniform sampler2D image; uniform sampler2D uDepthMap; uniform float iQuality;\n" +
                 "uniform int iCameraMode; uniform int iCameraProjection; uniform vec3 iCameraPosition;\n" +
                 "uniform float iCameraOrbital; uniform float iCameraDolly; uniform vec3 iCameraZenith;\n" +
@@ -301,13 +369,41 @@ class MainActivity : AppCompatActivity() {
                 "uniform float iBlurIntensity; uniform float iBlurStart; uniform float iBlurEnd; uniform float iBlurExponent;\n" +
                 "uniform float iBlurDirections; uniform float iBlurQuality; uniform float iVigIntensity; uniform float iVigDecay;\n" +
                 "uniform float iColorsSaturation; uniform float iColorsContrast; uniform float iColorsBrightness; uniform float iColorsSepia;\n" +
-                "uniform bool iRealtime; uniform float iTau; uniform float iFramerate;\n" +
+                "uniform bool iRealtime; uniform float iTau; uniform float iFramerate; uniform float iTime;\n" +
                 "in vec2 v_gluv; in vec2 v_agluv; in vec2 v_stuv; in vec2 v_astuv;\n" +
                 "out vec4 fragColor;\n" +
                 "vec2 agluv; vec2 gluv; vec2 stuv; vec2 astuv;\n" +
                 shaderFlow + cameraFlow + depthFlowLogic
 
             program = createProgram(vShaderCode, fShaderCode)
+            cacheUniformLocations()  // Cache all locations once after link
+        }
+
+        /** Look up all uniform locations exactly once after the program is linked. */
+        private fun cacheUniformLocations() {
+            fun loc(name: String) = GLES30.glGetUniformLocation(program, name)
+            uResolution     = loc("iResolution");     uAspectRatio    = loc("iAspectRatio")
+            uImageAspect    = loc("iImageAspect")  // image w/h for center-crop
+            uViewportAspect = loc("iViewportAspect"); uWantAspect     = loc("iWantAspect")
+            uQuality        = loc("iQuality");         uCameraMode     = loc("iCameraMode")
+            uCameraProj     = loc("iCameraProjection");uCameraPos      = loc("iCameraPosition")
+            uCameraFwd      = loc("iCameraForward");   uCameraUp       = loc("iCameraUpward")
+            uCameraRight    = loc("iCameraRight");     uCameraZenith   = loc("iCameraZenith")
+            uCameraFocal    = loc("iCameraFocalLength");uCameraZoom    = loc("iCameraZoom")
+            uCameraOrbit    = loc("iCameraOrbital");   uCameraDolly    = loc("iCameraDolly")
+            uCameraSep      = loc("iCameraSeparation");uCameraIso      = loc("iCameraIsometric")
+            uDepthOffset    = loc("iDepthOffset");     uDepthHeight    = loc("iDepthHeight")
+            uDepthSteady    = loc("iDepthSteady");     uDepthZoom      = loc("iDepthZoom")
+            uDepthIso       = loc("iDepthIsometric");  uDepthDolly     = loc("iDepthDolly")
+            uDepthFocus     = loc("iDepthFocus");      uDepthCenter    = loc("iDepthCenter")
+            uDepthOrigin    = loc("iDepthOrigin");     uTau            = loc("iTau")
+            uRealtime       = loc("iRealtime");        uFramerate      = loc("iFramerate")
+            uInpaint        = loc("iInpaint");         uLensIntensity  = loc("iLensIntensity")
+            uLensQuality    = loc("iLensQuality");     uBlurIntensity  = loc("iBlurIntensity")
+            uVigIntensity   = loc("iVigIntensity");    uSaturation     = loc("iColorsSaturation")
+            uContrast       = loc("iColorsContrast");  uBrightness     = loc("iColorsBrightness")
+            uSepia          = loc("iColorsSepia");     uImage          = loc("image")
+            uDepthMap       = loc("uDepthMap");        uTime           = loc("iTime")
         }
 
         private fun createProgram(vSource: String, fSource: String): Int {
