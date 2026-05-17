@@ -18,6 +18,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
+import com.example.depthflow.sensors.RotationParser
+import com.example.depthflow.dsp.LowPassFilter
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
@@ -33,43 +35,7 @@ class MainActivity : AppCompatActivity() {
     private var realEstimator: com.example.depthflow.estimators.OnnxDepthEstimator? = null
     private lateinit var glSurfaceView: GLSurfaceView
     private lateinit var renderer: ParallaxRenderer
-    private lateinit var sensorManager: SensorManager
-    private var rotationSensor: Sensor? = null
-
-    // Throttle sensor → only re-render when offset changes meaningfully
-    private val sensorListener = object : SensorEventListener {
-        private var lastLogTime = 0L
-        private var lastRoll = 0f
-        private var lastPitch = 0f
-        override fun onSensorChanged(event: SensorEvent) {
-            if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR ||
-                event.sensor.type == Sensor.TYPE_GAME_ROTATION_VECTOR) {
-                val rotationMatrix = FloatArray(9)
-                SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
-                val orientation = FloatArray(3)
-                SensorManager.getOrientation(rotationMatrix, orientation)
-
-                val pitch = orientation[1]
-                val roll  = orientation[2]
-
-                // Only request a new frame if the offset changed by at least 0.002
-                val dx = kotlin.math.abs(roll  - lastRoll)
-                val dy = kotlin.math.abs(pitch - lastPitch)
-                if (dx > 0.002f || dy > 0.002f) {
-                    renderer.setOffset(-roll * 1.2f, -pitch * 1.2f)
-                    glSurfaceView.requestRender()
-                    lastRoll  = roll
-                    lastPitch = pitch
-
-                    if (System.currentTimeMillis() - lastLogTime > 1000) {
-                        android.util.Log.d("Parallax", "Sensor: roll=$roll, pitch=$pitch")
-                        lastLogTime = System.currentTimeMillis()
-                    }
-                }
-            }
-        }
-        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
-    }
+    private lateinit var parallax: Parallax
 
     private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let {
@@ -128,9 +94,16 @@ class MainActivity : AppCompatActivity() {
         // This is the single biggest power/heat optimization — idle = 0 GPU work
         glSurfaceView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
 
-        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-            ?: sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
+        parallax = Parallax(this).apply {
+            setSensitivity(0.2) // Tương đương với filter factor cũ
+            setFallback(0.01)   // Tốc độ hồi về tâm
+            onUpdate = { degX, degY ->
+                val rollRad = Math.toRadians(degX).toFloat()
+                val pitchRad = Math.toRadians(degY).toFloat()
+                renderer.setOffset(-rollRad * 1.2f, -pitchRad * 1.2f)
+                glSurfaceView.requestRender()
+            }
+        }
 
         // Pre-load estimator to avoid delay on first run
         lifecycleScope.launch(Dispatchers.IO) {
@@ -153,16 +126,13 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         glSurfaceView.onResume()
-        rotationSensor?.let {
-            // SENSOR_DELAY_UI (~60ms) is sufficient for parallax; GAME (~20ms) is overkill
-            sensorManager.registerListener(sensorListener, it, SensorManager.SENSOR_DELAY_UI)
-        }
+        parallax.start()
     }
 
     override fun onPause() {
         super.onPause()
         glSurfaceView.onPause()
-        sensorManager.unregisterListener(sensorListener)
+        parallax.stop()
     }
 
     inner class ParallaxRenderer(private val context: Context) : GLSurfaceView.Renderer {
