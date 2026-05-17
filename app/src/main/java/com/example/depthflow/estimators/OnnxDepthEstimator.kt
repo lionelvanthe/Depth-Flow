@@ -9,6 +9,7 @@ import ai.onnxruntime.OrtSession
 import java.nio.FloatBuffer
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.scale
+import java.io.File
 import java.util.EnumSet
 
 class OnnxDepthEstimator(private val context: Context, private val modelPath: String) : DepthEstimator {
@@ -21,15 +22,31 @@ class OnnxDepthEstimator(private val context: Context, private val modelPath: St
     }
 
     private fun loadModel() {
-        val modelBytes = context.assets.open(modelPath).readBytes()
+        val modelFile = File(context.cacheDir, modelPath)
+        
+        // 1. Optimization: Use File path instead of ByteArray to enable Memory Mapping (mmap)
+        // This is much faster and saves a lot of JVM heap memory.
+        if (!modelFile.exists()) {
+            context.assets.open(modelPath).use { input ->
+                modelFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+        }
+
         val options = OrtSession.SessionOptions()
         try {
-            // Use NNAPI for hardware acceleration on Android
+            // 2. Optimization: Configure threading for CPU fallback
+            // Most mobile CPUs have 4-8 cores, using 2-4 threads is usually optimal.
+            options.setIntraOpNumThreads(2)
+            
+            // 3. Optimization: Use NNAPI for hardware acceleration (NPU/GPU)
             options.addNnapi()
         } catch (e: Exception) {
             // Fallback to CPU if NNAPI is not available
         }
-        ortSession = ortEnv.createSession(modelBytes, options)
+        
+        ortSession = ortEnv.createSession(modelFile.absolutePath, options)
     }
 
     override fun estimate(image: Bitmap): Bitmap {
