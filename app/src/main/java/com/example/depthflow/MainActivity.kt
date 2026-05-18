@@ -141,6 +141,7 @@ class MainActivity : AppCompatActivity() {
 
         private var imageBitmap: Bitmap? = null
         private var depthBitmap: Bitmap? = null
+        private var needsUpdateTextures = false
         private var offset = PointF(0f, 0f)
         private var imageAspectRatio: Float = 1f
         private var viewportAspectRatio: Float = 1f
@@ -204,6 +205,7 @@ class MainActivity : AppCompatActivity() {
             imageBitmap = image
             depthBitmap = depth
             imageAspectRatio = image.width.toFloat() / image.height.toFloat()
+            needsUpdateTextures = true
             glSurfaceView.requestRender()
         }
 
@@ -214,6 +216,12 @@ class MainActivity : AppCompatActivity() {
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
             GLES30.glClearColor(0f, 0f, 0f, 1f)
             setupShaders()
+            // Reset texture IDs because the EGL context is new (previous textures are lost)
+            textureId = 0
+            depthTextureId = 0
+            needsUpdateTextures = true
+            // Request a render call to ensure the screen updates after restoration
+            glSurfaceView.requestRender()
         }
 
         override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -223,7 +231,12 @@ class MainActivity : AppCompatActivity() {
 
         override fun onDrawFrame(gl: GL10?) {
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-            imageBitmap?.let { updateTextures(); imageBitmap = null }
+            
+            if (needsUpdateTextures && imageBitmap != null && depthBitmap != null) {
+                updateTextures()
+                needsUpdateTextures = false
+            }
+
             if (program == 0 || textureId == 0 || depthTextureId == 0) return
             
             GLES30.glUseProgram(program)
