@@ -134,7 +134,7 @@ class ParallaxRenderer(private val requestRender: () -> Unit) : GLSurfaceView.Re
         GLES30.glUniform1f(uAspectRatio,    viewportAspectRatio)
         GLES30.glUniform1f(uImageAspect,    imageAspectRatio)
         GLES30.glUniform2f(uOffset,         offset.x + idleX, offset.y + idleY)
-        GLES30.glUniform1f(uDepthHeight,    0.10f)
+        GLES30.glUniform1f(uDepthHeight,    0.06f)
 
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, textureId)

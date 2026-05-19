@@ -24,7 +24,7 @@ class SpatialParallaxView @JvmOverloads constructor(
             onUpdate = { degX, degY ->
                 val rollRad = Math.toRadians(degX).toFloat()
                 val pitchRad = Math.toRadians(degY).toFloat()
-                parallaxRenderer.setOffset(-rollRad * 1f, -pitchRad * 1f)
+                parallaxRenderer.setOffset(-rollRad * 2f, -pitchRad * 2f)
                 requestRender()
             }
         }

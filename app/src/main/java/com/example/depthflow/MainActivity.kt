@@ -1,8 +1,5 @@
 package com.example.depthflow
 
-import android.graphics.Bitmap
-import android.graphics.PointF
-import android.opengl.GLES30
 
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
@@ -14,17 +11,10 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.nio.FloatBuffer
-import javax.microedition.khronos.egl.EGLConfig
-import javax.microedition.khronos.opengles.GL10
-import kotlin.math.cos
-import kotlin.math.sin
 import androidx.core.graphics.scale
 
 class MainActivity : AppCompatActivity() {
-    private var realEstimator: com.example.depthflow.estimators.OnnxDepthEstimator? = null
+    private var realEstimator: com.example.depthflow.estimators.DepthAnything? = null
     private lateinit var spatialView: SpatialParallaxView
 
     private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -58,10 +48,10 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 if (realEstimator == null) {
-                    realEstimator = com.example.depthflow.estimators.OnnxDepthEstimator(this@MainActivity, "depth_anything_v2_small.onnx")
+                    realEstimator = com.example.depthflow.estimators.DepthAnything(this@MainActivity, "fused_model_uint8_256.onnx")
                 }
 
-                val depthMap = realEstimator?.estimate(bitmap) ?: bitmap
+                val depthMap = realEstimator?.predict(bitmap) ?: bitmap
                 
                 withContext(Dispatchers.Main) {
                     findViewById<android.view.View>(R.id.progressBar).visibility = android.view.View.GONE
@@ -81,7 +71,7 @@ class MainActivity : AppCompatActivity() {
         // Pre-load estimator to avoid delay on first run
         lifecycleScope.launch(Dispatchers.IO) {
             if (realEstimator == null) {
-                realEstimator = com.example.depthflow.estimators.OnnxDepthEstimator(this@MainActivity, "depth_anything_v2_small.onnx")
+                realEstimator = com.example.depthflow.estimators.DepthAnything(this@MainActivity, "fused_model_uint8_256.onnx")
             }
         }
 
