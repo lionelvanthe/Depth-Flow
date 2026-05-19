@@ -36,6 +36,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":parallax"))
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.constraintlayout)

@@ -23,5 +23,5 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "DepthFlow"
-include(":app")
+include(":app", ":parallax")
  

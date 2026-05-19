@@ -3,8 +3,7 @@ package com.example.depthflow
 import android.graphics.Bitmap
 import android.graphics.PointF
 import android.opengl.GLES30
-import android.opengl.GLSurfaceView
-import android.opengl.GLUtils
+
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,9 +25,7 @@ import androidx.core.graphics.scale
 
 class MainActivity : AppCompatActivity() {
     private var realEstimator: com.example.depthflow.estimators.OnnxDepthEstimator? = null
-    private lateinit var glSurfaceView: GLSurfaceView
-    private lateinit var renderer: ParallaxRenderer
-    private lateinit var parallax: Parallax
+    private lateinit var spatialView: SpatialParallaxView
 
     private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let {
@@ -68,7 +65,7 @@ class MainActivity : AppCompatActivity() {
                 
                 withContext(Dispatchers.Main) {
                     findViewById<android.view.View>(R.id.progressBar).visibility = android.view.View.GONE
-                    renderer.setBitmaps(bitmap, depthMap)
+                    spatialView.setImages(bitmap, depthMap)
                 }
             }
         }
@@ -79,24 +76,7 @@ class MainActivity : AppCompatActivity() {
         enableEdgeToEdge()
         setContentView(R.layout.activity_main)
 
-        glSurfaceView = findViewById(R.id.glSurfaceView)
-        glSurfaceView.setEGLContextClientVersion(3)
-        renderer = ParallaxRenderer { glSurfaceView.requestRender() }
-        glSurfaceView.setRenderer(renderer)
-        // RENDERMODE_WHEN_DIRTY: only draw when we explicitly call requestRender()
-        // This is the single biggest power/heat optimization — idle = 0 GPU work
-        glSurfaceView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
-
-        parallax = Parallax(this).apply {
-            setSensitivity(0.2) // Tương đương với filter factor cũ
-            setFallback(0.01)   // Tốc độ hồi về tâm
-            onUpdate = { degX, degY ->
-                val rollRad = Math.toRadians(degX).toFloat()
-                val pitchRad = Math.toRadians(degY).toFloat()
-                renderer.setOffset(-rollRad * 1f, -pitchRad * 1f)
-                glSurfaceView.requestRender()
-            }
-        }
+        spatialView = findViewById(R.id.glSurfaceView)
 
         // Pre-load estimator to avoid delay on first run
         lifecycleScope.launch(Dispatchers.IO) {
@@ -118,14 +98,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        glSurfaceView.onResume()
-        parallax.start()
+        spatialView.onResume()
     }
 
     override fun onPause() {
         super.onPause()
-        glSurfaceView.onPause()
-        parallax.stop()
+        spatialView.onPause()
     }
 
 
