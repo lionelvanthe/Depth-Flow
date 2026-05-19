@@ -87,7 +87,71 @@ class OnnxDepthEstimator(private val context: Context, private val modelPath: St
         val outputData = FloatArray(channelSize)
         outputTensor.floatBuffer.get(outputData)
 
-        // 4. Postprocessing: Convert output to Grayscale Bitmap
+        // 4. Postprocessing: Sliding Window Box Blur to smooth abrupt depth changes
+        // This eliminates holes and tearing by turning sharp depth cliffs into smooth slopes.
+        val blurRadius = 12
+        val blurredData = FloatArray(channelSize)
+        
+        // Horizontal pass (O(1) sliding window)
+        for (y in 0 until inputSize) {
+            var sum = 0f
+            var count = 0
+            val rowOffset = y * inputSize
+            
+            for (kx in -blurRadius..blurRadius) {
+                if (kx >= 0) {
+                    sum += outputData[rowOffset + kx]
+                    count++
+                }
+            }
+            blurredData[rowOffset] = sum / count
+            
+            for (x in 1 until inputSize) {
+                val left = x - blurRadius - 1
+                val right = x + blurRadius
+                
+                if (left >= 0) {
+                    sum -= outputData[rowOffset + left]
+                    count--
+                }
+                if (right < inputSize) {
+                    sum += outputData[rowOffset + right]
+                    count++
+                }
+                blurredData[rowOffset + x] = sum / count
+            }
+        }
+        
+        // Vertical pass (O(1) sliding window)
+        for (x in 0 until inputSize) {
+            var sum = 0f
+            var count = 0
+            
+            for (ky in -blurRadius..blurRadius) {
+                if (ky >= 0) {
+                    sum += blurredData[ky * inputSize + x]
+                    count++
+                }
+            }
+            outputData[x] = sum / count
+            
+            for (y in 1 until inputSize) {
+                val top = y - blurRadius - 1
+                val bottom = y + blurRadius
+                
+                if (top >= 0) {
+                    sum -= blurredData[top * inputSize + x]
+                    count--
+                }
+                if (bottom < inputSize) {
+                    sum += blurredData[bottom * inputSize + x]
+                    count++
+                }
+                outputData[y * inputSize + x] = sum / count
+            }
+        }
+
+        // 5. Convert to Grayscale Bitmap
         var min = Float.MAX_VALUE
         var max = Float.MIN_VALUE
         for (v in outputData) {

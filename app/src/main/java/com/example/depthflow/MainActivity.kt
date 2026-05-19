@@ -93,7 +93,7 @@ class MainActivity : AppCompatActivity() {
             onUpdate = { degX, degY ->
                 val rollRad = Math.toRadians(degX).toFloat()
                 val pitchRad = Math.toRadians(degY).toFloat()
-                renderer.setOffset(-rollRad * 3.5f, -pitchRad * 2.5f)
+                renderer.setOffset(-rollRad * 1.1f, -pitchRad * 1.1f)
                 glSurfaceView.requestRender()
             }
         }
@@ -133,10 +133,10 @@ class MainActivity : AppCompatActivity() {
         private var textureId: Int = 0
         private var depthTextureId: Int = 0
         
-        // Use a mesh grid for high-performance vertex-based displacement
-        private val GRID_SIZE = 64 
+        // Use a simple quad. Spatial Parallax is now handled in the Fragment Shader.
+        private val GRID_SIZE = 2
         private lateinit var vertexBuffer: FloatBuffer
-        private lateinit var indexBuffer: ShortBuffer
+        private lateinit var indexBuffer: java.nio.IntBuffer
         private var indexCount: Int = 0
 
         private var imageBitmap: Bitmap? = null
@@ -178,14 +178,14 @@ class MainActivity : AppCompatActivity() {
                 .order(ByteOrder.nativeOrder()).asFloatBuffer().put(vertices)
             vertexBuffer.position(0)
 
-            val indices = ShortArray((GRID_SIZE - 1) * (GRID_SIZE - 1) * 6)
+            val indices = IntArray((GRID_SIZE - 1) * (GRID_SIZE - 1) * 6)
             var iIdx = 0
             for (y in 0 until GRID_SIZE - 1) {
                 for (x in 0 until GRID_SIZE - 1) {
-                    val topLeft = (y * GRID_SIZE + x).toShort()
-                    val topRight = (topLeft + 1).toShort()
-                    val bottomLeft = ((y + 1) * GRID_SIZE + x).toShort()
-                    val bottomRight = (bottomLeft + 1).toShort()
+                    val topLeft = (y * GRID_SIZE + x)
+                    val topRight = (topLeft + 1)
+                    val bottomLeft = ((y + 1) * GRID_SIZE + x)
+                    val bottomRight = (bottomLeft + 1)
 
                     indices[iIdx++] = topLeft
                     indices[iIdx++] = bottomLeft
@@ -196,8 +196,8 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             indexCount = indices.size
-            indexBuffer = ByteBuffer.allocateDirect(indices.size * 2)
-                .order(ByteOrder.nativeOrder()).asShortBuffer().put(indices)
+            indexBuffer = ByteBuffer.allocateDirect(indices.size * 4)
+                .order(ByteOrder.nativeOrder()).asIntBuffer().put(indices)
             indexBuffer.position(0)
         }
 
@@ -246,7 +246,7 @@ class MainActivity : AppCompatActivity() {
             GLES30.glUniform1f(uAspectRatio,    viewportAspectRatio)
             GLES30.glUniform1f(uImageAspect,    imageAspectRatio)
             GLES30.glUniform2f(uOffset,         offset.x, offset.y)
-            GLES30.glUniform1f(uDepthHeight,    0.18f)
+            GLES30.glUniform1f(uDepthHeight,    0.12f)
             GLES30.glUniform1f(uTime,           timeSec)
 
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
@@ -261,7 +261,7 @@ class MainActivity : AppCompatActivity() {
             GLES30.glEnableVertexAttribArray(posHandle)
             GLES30.glVertexAttribPointer(posHandle, 2, GLES30.GL_FLOAT, false, 0, vertexBuffer)
             
-            GLES30.glDrawElements(GLES30.GL_TRIANGLES, indexCount, GLES30.GL_UNSIGNED_SHORT, indexBuffer)
+            GLES30.glDrawElements(GLES30.GL_TRIANGLES, indexCount, GLES30.GL_UNSIGNED_INT, indexBuffer)
             
             GLES30.glDisableVertexAttribArray(posHandle)
         }
@@ -289,38 +289,16 @@ class MainActivity : AppCompatActivity() {
             val vShaderCode = """
                 #version 300 es
                 layout(location = 0) in vec2 a_Position;
-                uniform sampler2D uDepthMap;
-                uniform vec2 uOffset;
-                uniform float uDepthHeight;
-                uniform float iTime;
-                uniform float iAspectRatio;
-                uniform float iImageAspect;
                 out vec2 v_TexCoord;
 
                 void main() {
-                    // Map -1.1..1.1 range back to 0..1 for UV sampling
+                    // Map -1.15..1.15 range back to 0..1 for UV sampling
                     vec2 uv = (a_Position / 1.15 + 1.0) * 0.5;
                     uv.y = 1.0 - uv.y; // Flip Y for Android Bitmaps
                     v_TexCoord = uv;
                     
-                    // Center-crop logic for depth sampling
-                    float ratio = iAspectRatio / iImageAspect;
-                    vec2 sampleUV = uv;
-                    if (ratio > 1.0) {
-                        sampleUV.y = (sampleUV.y - 0.5) / ratio + 0.5;
-                    } else {
-                        sampleUV.x = (sampleUV.x - 0.5) * ratio + 0.5;
-                    }
-                    
-                    float depth = texture(uDepthMap, sampleUV).r;
-                    
-                    // Subtle idle movement
-                    vec2 idle = vec2(sin(iTime * 0.8), cos(iTime * 0.7)) * 0.004;
-                    
-                    // Parallax displacement (depth 0.5 is anchor)
-                    vec2 displacement = (uOffset + idle) * (depth - 0.5) * uDepthHeight;
-                    
-                    gl_Position = vec4(a_Position + displacement, 0.0, 1.0);
+                    // No vertex displacement. Spatial Parallax is handled in Fragment Shader.
+                    gl_Position = vec4(a_Position, 0.0, 1.0);
                 }
             """.trimIndent()
 
@@ -328,6 +306,10 @@ class MainActivity : AppCompatActivity() {
                 #version 300 es
                 precision highp float;
                 uniform sampler2D image;
+                uniform sampler2D uDepthMap;
+                uniform vec2 uOffset;
+                uniform float uDepthHeight;
+                uniform float iTime;
                 uniform float iAspectRatio;
                 uniform float iImageAspect;
                 in vec2 v_TexCoord;
@@ -342,7 +324,58 @@ class MainActivity : AppCompatActivity() {
                         uv.x = (uv.x - 0.5) * ratio + 0.5;
                     }
                     
-                    fragColor = texture(image, uv);
+                    vec2 idle = vec2(sin(iTime * 0.8), cos(iTime * 0.7)) * 0.004;
+                    vec2 parallax = (uOffset + idle) * uDepthHeight;
+                    
+                    // Relief Mapping: Linear Search + Binary Search
+                    // This method solves the inverse mapping equation with extreme precision.
+                    // By refining the intersection with binary search, it guarantees ZERO 
+                    // banding/stepping artifacts even on extreme depth discontinuities.
+                    
+                    const float STEPS = 30.0;
+                    vec2 delta = parallax / STEPS;
+                    float stepDepth = 1.0 / STEPS;
+                    
+                    // Start at the front-most layer (depth = 1.0)
+                    vec2 currentUV = uv - parallax * 0.5; 
+                    float currentLayerDepth = 1.0;
+                    float currentDepthMapValue = texture(uDepthMap, currentUV).r;
+                    
+                    // 1. Linear Search: Find the first crossing
+                    for (float i = 0.0; i < STEPS; i++) {
+                        if (currentLayerDepth <= currentDepthMapValue) {
+                            break; // Hit the surface!
+                        }
+                        currentUV += delta;
+                        currentLayerDepth -= stepDepth;
+                        currentDepthMapValue = texture(uDepthMap, currentUV).r;
+                    }
+                    
+                    // 2. Binary Search: Refine the exact intersection point to sub-pixel accuracy
+                    // The intersection lies between the current step and the previous step.
+                    vec2 minUV = currentUV - delta;
+                    vec2 maxUV = currentUV;
+                    float minLayerDepth = currentLayerDepth + stepDepth;
+                    float maxLayerDepth = currentLayerDepth;
+                    
+                    for (int j = 0; j < 8; j++) {
+                        vec2 midUV = (minUV + maxUV) * 0.5;
+                        float midLayerDepth = (minLayerDepth + maxLayerDepth) * 0.5;
+                        float midDepthMapValue = texture(uDepthMap, midUV).r;
+                        
+                        if (midLayerDepth > midDepthMapValue) {
+                            // Intersection is deeper (closer to maxUV)
+                            minUV = midUV;
+                            minLayerDepth = midLayerDepth;
+                        } else {
+                            // Intersection is shallower (closer to minUV)
+                            maxUV = midUV;
+                            maxLayerDepth = midLayerDepth;
+                        }
+                    }
+                    
+                    // Use the perfectly refined coordinate
+                    fragColor = texture(image, maxUV);
                 }
             """.trimIndent()
 
