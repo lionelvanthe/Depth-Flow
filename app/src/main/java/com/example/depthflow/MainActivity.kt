@@ -93,7 +93,7 @@ class MainActivity : AppCompatActivity() {
             onUpdate = { degX, degY ->
                 val rollRad = Math.toRadians(degX).toFloat()
                 val pitchRad = Math.toRadians(degY).toFloat()
-                renderer.setOffset(-rollRad * 1.1f, -pitchRad * 1.1f)
+                renderer.setOffset(-rollRad * 1f, -pitchRad * 1f)
                 glSurfaceView.requestRender()
             }
         }
@@ -165,7 +165,7 @@ class MainActivity : AppCompatActivity() {
             // Create a grid of vertices covering [-1.1, 1.1] to allow for displacement without edges showing
             val vertices = FloatArray(GRID_SIZE * GRID_SIZE * 2)
             var vIdx = 0
-            val scale = 1.15f
+            val scale = 1.0f // Sửa thành 1.0f để vừa khít hoàn toàn ảnh gốc, không bị zoom
             for (y in 0 until GRID_SIZE) {
                 val yPos = ((y.toFloat() / (GRID_SIZE - 1)) * 2f - 1f) * scale
                 for (x in 0 until GRID_SIZE) {
@@ -246,7 +246,7 @@ class MainActivity : AppCompatActivity() {
             GLES30.glUniform1f(uAspectRatio,    viewportAspectRatio)
             GLES30.glUniform1f(uImageAspect,    imageAspectRatio)
             GLES30.glUniform2f(uOffset,         offset.x, offset.y)
-            GLES30.glUniform1f(uDepthHeight,    0.12f)
+            GLES30.glUniform1f(uDepthHeight,    0.1f)
             GLES30.glUniform1f(uTime,           timeSec)
 
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
@@ -292,8 +292,8 @@ class MainActivity : AppCompatActivity() {
                 out vec2 v_TexCoord;
 
                 void main() {
-                    // Map -1.15..1.15 range back to 0..1 for UV sampling
-                    vec2 uv = (a_Position / 1.15 + 1.0) * 0.5;
+                    // Map -1.0..1.0 range back to 0..1 for UV sampling
+                    vec2 uv = (a_Position + 1.0) * 0.5;
                     uv.y = 1.0 - uv.y; // Flip Y for Android Bitmaps
                     v_TexCoord = uv;
                     
